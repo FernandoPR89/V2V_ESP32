@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <input>
+        <net-file value="guanajuato_v2v.net.xml"/>
+        <route-files value="rutas_gto.rou.xml"/>
+        </input>
+    <time>
+        <begin value="0"/>
+        <end value="2000"/>
+        <step-length value="0.1"/> 
+    </time>
+    <processing>
+        <time-to-teleport value="-1"/> 
+    </processing>
+</configuration>

@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<additional>
+    <vType id="coche_estandar" vClass="passenger" emissionClass="HBEFA4/PC_petrol_Euro-6c" accel="2.6" decel="4.5" sigma="0.5" length="4.5" maxSpeed="40.0"/>
+</additional>
