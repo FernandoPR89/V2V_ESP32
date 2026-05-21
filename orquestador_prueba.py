@@ -9,47 +9,26 @@ BAUD_RATE = 115200
 
 # 1. ABRIR PUERTO Y ESPERAR EL HANDSHAKE
 try:
+    # Aumentamos el timeout para la fase de conexión
     esp32_serial = serial.Serial(PUERTO_COM, BAUD_RATE, timeout=1.0)
     print(f"Puerto abierto. Esperando a que el ESP32-S3 (Nodo Edge) reinicie...")
     
     listo = False
     tiempo_inicio = time.time()
     
+    # Python escuchará el puerto durante 10 segundos buscando el mensaje del setup() de C++
     while not listo and (time.time() - tiempo_inicio) < 10:
         linea = esp32_serial.readline().decode('utf-8', errors='ignore').strip()
+        if linea:
+            print(f"[BOOT S3]: {linea}")
+            
         if "OK: NODO EDGE S3 LISTO" in linea:
             listo = True
             
     if not listo:
-        sys.exit("Error: El ESP32 no respondió a tiempo.")
+        sys.exit("Error: El ESP32 no respondió a tiempo. Verifica que el código de PlatformIO esté cargado.")
         
-    print("\n¡Sincronización exitosa! Iniciando inyección del mapa en PSRAM...\n")
-    
-# --- NUEVA FUNCIÓN: INYECCIÓN DEL MAPA ---
-    with open("matriz_sanfrancisco.txt", "r") as f:
-        lineas_mapa = f.readlines()
-        
-    for i, linea in enumerate(lineas_mapa):
-        trama = linea.strip() + "\n"
-        esp32_serial.write(trama.encode('utf-8'))
-        
-        ack_recibido = False
-        # Esperamos respuesta con límite de tiempo interno del puerto serial
-        while not ack_recibido:
-            linea_cruda = esp32_serial.readline()
-            if linea_cruda:
-                respuesta = linea_cruda.decode('utf-8', errors='ignore').strip()
-                
-                if respuesta == "ACK_MAPA" or respuesta == "MAPA_COMPLETO":
-                    ack_recibido = True
-                elif respuesta:
-                    # ESTO ES VITAL: Si el ESP32 manda un error o texto diferente, lo imprimimos
-                    print(f"[S3 EDGE]: {respuesta}")
-                
-        if i % 500 == 0:
-            print(f"Progreso de carga: {i}/{len(lineas_mapa)} líneas inyectadas...")
-            
-    print("\n¡Mapa cargado exitosamente en el hardware Edge!")
+    print("\n¡Sincronización exitosa! Arrancando el Gemelo Digital en SUMO...\n")
     
 except serial.SerialException:
     sys.exit(f"Error: No se pudo abrir el puerto {PUERTO_COM}.")
