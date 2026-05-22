@@ -3,8 +3,9 @@ import sys
 import traci
 import serial
 import time
+import sumolib
 
-PUERTO_COM = 'COM9' 
+PUERTO_COM = 'COM10' 
 BAUD_RATE = 115200
 
 # 1. ABRIR PUERTO Y ESPERAR EL HANDSHAKE
@@ -50,6 +51,25 @@ try:
             print(f"Progreso de carga: {i}/{len(lineas_mapa)} líneas inyectadas...")
             
     print("\n¡Mapa cargado exitosamente en el hardware Edge!")
+
+    # --- NUEVO: ATRAPAR LOS LOGS DEL ALGORITMO GWO ---
+    print("\n--- INICIALIZANDO ALGORITMO GWO ---")
+    
+    # Python escuchará indefinidamente hasta que el ESP32 termine sus cálculos
+    optimizacion_lista = False
+    while not optimizacion_lista:
+        linea_cruda = esp32_serial.readline()
+        if linea_cruda:
+            linea_gwo = linea_cruda.decode('utf-8', errors='ignore').strip()
+            if linea_gwo:
+                print(f"[EDGE LOG]: {linea_gwo}")
+                
+                # Buscamos la frase exacta que imprime tu main.cpp al terminar
+                if "Optimizacion finalizada" in linea_gwo:
+                    optimizacion_lista = True
+                
+    print("-----------------------------------\n")
+    print("Arrancando el Gemelo Digital en SUMO...")
     
 except serial.SerialException:
     sys.exit(f"Error: No se pudo abrir el puerto {PUERTO_COM}.")
@@ -63,29 +83,58 @@ else:
 
 sumoCmd = ["sumo-gui", "-c", "Mapas/NobHill/simulacion_sf.sumocfg"] 
 
+
+# --- NUEVA PREPARACIÓN DEL DICCIONARIO URBANO ---
+print("Cargando base de datos topográfica en Python...")
+ruta_red = r"C:\Users\Fernando\Documents\PHD\V2V_ESP32\Mapas\NobHill\sanfrancisco_v2v.net.xml"
+red = sumolib.net.readNet(ruta_red)
+
+# Reconstruimos el diccionario id-nodo idéntico al del extractor
+nodo_a_id = {nodo.getID(): indice for indice, nodo in enumerate(red.getNodes())}
+
 # 3. EJECUCIÓN SINCRONIZADA
 def extraer_y_enviar():
     traci.start(sumoCmd)
     paso = 0
     
-    # Reducimos el timeout del serial ahora que ya estamos conectados para no frenar la simulación
-    esp32_serial.timeout = 0.05 
+    esp32_serial.timeout = 0.01 
     
     while paso < 500:
         traci.simulationStep()
         vehiculos_activos = traci.vehicle.getIDList()
         
         for veh_id in vehiculos_activos[:5]:
-            x, y = traci.vehicle.getPosition(veh_id)
+            # 1. Obtener la calle actual (ID en texto de SUMO)
+            edge_id = traci.vehicle.getRoadID(veh_id)
+            
+            # Saltamos si el vehículo está en una intersección interna (:cluster...)
+            if edge_id.startswith(":"):
+                continue
+                
             velocidad = traci.vehicle.getSpeed(veh_id)
             co2 = traci.vehicle.getCO2Emission(veh_id)
             
-            trama = f"{veh_id},{x:.2f},{y:.2f},{velocidad:.2f},{co2:.2f}\n"
-            esp32_serial.write(trama.encode('utf-8'))
+            try:
+                # 2. Obtener los nodos estructurales de la calle
+                edge = red.getEdge(edge_id)
+                origen_str = edge.getFromNode().getID()
+                destino_str = edge.getToNode().getID()
+                
+                # 3. Traducir los textos a los IDs numéricos que entiende el ESP32
+                origen_id = nodo_a_id[origen_str]
+                destino_id = nodo_a_id[destino_str]
+                
+                # 4. Empaquetar la nueva trama optimizada: ID_Veh, Origen, Destino, CO2
+                trama = f"{veh_id},{origen_id},{destino_id},{co2:.2f}\n"
+                esp32_serial.write(trama.encode('utf-8'))
+                
+                print(f"Enviado -> {trama.strip()}")
+                
+            except KeyError:
+                # Evita fallos si el vehículo pisa un elemento no indexado
+                continue
             
-            print(f"Enviado -> {trama.strip()}")
-            
-            # Leemos la confirmación (ACK) del microcontrolador
+            # Leer confirmaciones del S3
             while esp32_serial.in_waiting > 0:
                 try:
                     respuesta = esp32_serial.readline().decode('utf-8', errors='ignore').strip()
