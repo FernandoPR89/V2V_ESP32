@@ -137,32 +137,44 @@ def extraer_y_enviar():
                         if respuesta.startswith("NUEVA_RUTA:"):
                             datos = respuesta.split(":")[1].split(",")
                             veh_target = datos[0]
-                            ruta_nodos = datos[1:]
+                            nodo_destino_ia = int(datos[1])
                             
-                            if len(ruta_nodos) > 1:
-                                calles_sumo = []
+                            try:
+                                # 1. Dónde estamos
+                                edge_actual = traci.vehicle.getRoadID(veh_target)
                                 
-                                # NUEVO: TraCI exige empezar por la calle donde estamos parados
-                                calle_actual = traci.vehicle.getRoadID(veh_target)
-                                calles_sumo.append(calle_actual)
+                                # 2. Convertimos el NODO que envió la IA a un EDGE de SUMO
+                                # Buscamos una calle que llegue a ese nodo
+                                nodo_sumo_id = id_a_nodo[nodo_destino_ia]
+                                nodo_obj = red.getNode(nodo_sumo_id)
                                 
-                                for j in range(len(ruta_nodos) - 1):
-                                    n_origen = id_a_nodo[int(ruta_nodos[j])]
-                                    n_destino = id_a_nodo[int(ruta_nodos[j+1])]
+                                # Tomamos la primera calle que llegue a ese nodo como destino
+                                edges_llegada = nodo_obj.getIncoming()
+                                if edges_llegada:
+                                    edge_destino = edges_llegada[0].getID()
                                     
-                                    for calle_saliente in red.getNode(n_origen).getOutgoing():
-                                        if calle_saliente.getToNode().getID() == n_destino:
-                                            calles_sumo.append(calle_saliente.getID())
-                                            break
-                                
-                                if len(calles_sumo) > 1:
-                                    print(f"\n[>>>] APLICANDO DESVÍO AL VEHÍCULO {veh_target} [<<<]")
-                                    print(f"[>>>] RUTA: {calles_sumo} [<<<]\n") # <-- AGREGADO
-                                    try:
-                                        traci.vehicle.setRoute(veh_target, calles_sumo)
-                                        print("[OK] TraCI aceptó la nueva ruta.")
-                                    except Exception as e:
-                                        print(f"[ERROR] TraCI rechazó la ruta: {e}")
+                                    # 3. PEDIMOS A SUMO QUE CALCULE LA RUTA (Validación total)
+                                    nueva_ruta = traci.simulation.findRoute(edge_actual, edge_destino).edges
+                                    
+                                    print(f"\n[>>>] APLICANDO DESVÍO AL VEHÍCULO {veh_target} hacia nodo {nodo_destino_ia} [<<<]")
+                                    print(f"[>>>] RUTA ENCONTRADA: {nueva_ruta}")
+                                    
+                                    if veh_target in traci.vehicle.getIDList():
+                                        try:
+                                            print(f"\n[>>>] APLICANDO DESVÍO AL VEHÍCULO {veh_target} [<<<]")
+                                            traci.vehicle.setRoute(veh_target, list(nueva_ruta))
+                                            print("[OK] Ruta aplicada.")
+                                        except Exception as e:
+                                            print(f"[ERROR] TraCI rechazó el cambio: {e}")
+                                    else:
+                                        print(f"[!] Vehículo {veh_target} ya salió de la simulación. Ignorando.")
+
+                                    # traci.vehicle.setRoute(veh_target, list(nueva_ruta))
+                                    print("[OK] Ruta validada y aplicada por SUMO.")
+                                else:
+                                    print("[!] IA sugirió un nodo sin acceso.")
+                            except Exception as e:
+                                print(f"[ERROR] No se pudo calcular ruta: {e}")
                         else:
                             print(f"[MONITOR S3]: {respuesta}")
                 except Exception as e:
