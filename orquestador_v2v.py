@@ -91,57 +91,82 @@ red = sumolib.net.readNet(ruta_red)
 
 # Reconstruimos el diccionario id-nodo idéntico al del extractor
 nodo_a_id = {nodo.getID(): indice for indice, nodo in enumerate(red.getNodes())}
+id_a_nodo = {indice: nodo.getID() for indice, nodo in enumerate(red.getNodes())}
 
 # 3. EJECUCIÓN SINCRONIZADA
 def extraer_y_enviar():
     traci.start(sumoCmd)
     paso = 0
+    esp32_serial.timeout = 0.05 
     
-    esp32_serial.timeout = 0.01 
-    
-    while paso < 500:
+    # Aumentamos a 5000 pasos (aprox 8 minutos de simulación)
+    while paso < 5000:
         traci.simulationStep()
         vehiculos_activos = traci.vehicle.getIDList()
         
         for veh_id in vehiculos_activos[:5]:
-            # 1. Obtener la calle actual (ID en texto de SUMO)
             edge_id = traci.vehicle.getRoadID(veh_id)
-            
-            # Saltamos si el vehículo está en una intersección interna (:cluster...)
             if edge_id.startswith(":"):
                 continue
                 
-            velocidad = traci.vehicle.getSpeed(veh_id)
             co2 = traci.vehicle.getCO2Emission(veh_id)
             
             try:
-                # 2. Obtener los nodos estructurales de la calle
+                # 1. Nodos actuales
                 edge = red.getEdge(edge_id)
-                origen_str = edge.getFromNode().getID()
-                destino_str = edge.getToNode().getID()
+                origen_id = nodo_a_id[edge.getFromNode().getID()]
+                destino_id = nodo_a_id[edge.getToNode().getID()]
                 
-                # 3. Traducir los textos a los IDs numéricos que entiende el ESP32
-                origen_id = nodo_a_id[origen_str]
-                destino_id = nodo_a_id[destino_str]
+                # 2. NUEVO: Obtenemos el destino final real de la mente del conductor
+                ruta_edges = traci.vehicle.getRoute(veh_id)
+                edge_final = red.getEdge(ruta_edges[-1])
+                destino_final_id = nodo_a_id[edge_final.getToNode().getID()]
                 
-                # 4. Empaquetar la nueva trama optimizada: ID_Veh, Origen, Destino, CO2
-                trama = f"{veh_id},{origen_id},{destino_id},{co2:.2f}\n"
+                # 3. Trama con 4 datos: Vehículo, Origen, Destino_Actual, Destino_Final, CO2
+                trama = f"{veh_id},{origen_id},{destino_id},{destino_final_id},{co2:.2f}\n"
                 esp32_serial.write(trama.encode('utf-8'))
                 
-                print(f"Enviado -> {trama.strip()}")
-                
             except KeyError:
-                # Evita fallos si el vehículo pisa un elemento no indexado
                 continue
             
-            # Leer confirmaciones del S3
+            # Interceptor de rutas
             while esp32_serial.in_waiting > 0:
                 try:
                     respuesta = esp32_serial.readline().decode('utf-8', errors='ignore').strip()
                     if respuesta:
-                        print(f"[MONITOR S3]: {respuesta}")
-                except Exception:
-                    pass
+                        if respuesta.startswith("NUEVA_RUTA:"):
+                            datos = respuesta.split(":")[1].split(",")
+                            veh_target = datos[0]
+                            ruta_nodos = datos[1:]
+                            
+                            if len(ruta_nodos) > 1:
+                                calles_sumo = []
+                                
+                                # NUEVO: TraCI exige empezar por la calle donde estamos parados
+                                calle_actual = traci.vehicle.getRoadID(veh_target)
+                                calles_sumo.append(calle_actual)
+                                
+                                for j in range(len(ruta_nodos) - 1):
+                                    n_origen = id_a_nodo[int(ruta_nodos[j])]
+                                    n_destino = id_a_nodo[int(ruta_nodos[j+1])]
+                                    
+                                    for calle_saliente in red.getNode(n_origen).getOutgoing():
+                                        if calle_saliente.getToNode().getID() == n_destino:
+                                            calles_sumo.append(calle_saliente.getID())
+                                            break
+                                
+                                if len(calles_sumo) > 1:
+                                    print(f"\n[>>>] APLICANDO DESVÍO AL VEHÍCULO {veh_target} [<<<]")
+                                    print(f"[>>>] RUTA: {calles_sumo} [<<<]\n") # <-- AGREGADO
+                                    try:
+                                        traci.vehicle.setRoute(veh_target, calles_sumo)
+                                        print("[OK] TraCI aceptó la nueva ruta.")
+                                    except Exception as e:
+                                        print(f"[ERROR] TraCI rechazó la ruta: {e}")
+                        else:
+                            print(f"[MONITOR S3]: {respuesta}")
+                except Exception as e:
+                    print(f"[ERROR PYTHON]: {e}") # Para no estar ciegos ante errores de TraCI
             
         paso += 1
         
